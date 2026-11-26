@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.0.0](https://github.com/EcomDev/action-build-magento-image/compare/v1.0.1...v2.0.0) (2026-11-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* MariaDB and MySQL images are now minimal FROM scratch containers without CLI client tools, bash (MariaDB), or upstream docker-entrypoint.sh; pushed images default to OCI zstd layer compression (set compression: gzip for legacy runtimes); artifact downloads use token instead of password and cache defaults to false.
+
+### Features
+
+* add MYSQL_ENABLE_BINLOG runtime toggle and fix MySQL AppArmor builds ([e090795](https://github.com/EcomDev/action-build-magento-image/commit/e090795707217abc0266524bf8646f8c9609025b))
+* build minimal scratch MariaDB and MySQL testcontainer images ([d450fc9](https://github.com/EcomDev/action-build-magento-image/commit/d450fc942006ee4138d4b7504eefc4e449d3c45f))
+* enable zstd OCI layer compression by default when pushing images ([eba1c46](https://github.com/EcomDev/action-build-magento-image/commit/eba1c46c87c89af879438a5f107e23fd01267930))
+* Minimalistic Opensearch Container ([83bdae2](https://github.com/EcomDev/action-build-magento-image/commit/83bdae217c160a2939b5ac5cdd10d67ba82967fe))
+* support data-artifact v2 multi-stage builds and optional OpenSearch ([d2e6bf8](https://github.com/EcomDev/action-build-magento-image/commit/d2e6bf83aa782f2523c49504c10b10f68dbd6532))
+
+
+### Bug Fixes
+
+* bypass host AppArmor usr.sbin.mysqld attachment during MySQL builds ([03fa407](https://github.com/EcomDev/action-build-magento-image/commit/03fa4079e1083da69766324e1cc56fdc49fe648c))
+* drop empty SSL path flags for MariaDB 10.11 compatibility in init-db.sh ([ebbc864](https://github.com/EcomDev/action-build-magento-image/commit/ebbc8645729f6dbf05b7f35120d127a794b03562))
+* missing test file ([1dfba6a](https://github.com/EcomDev/action-build-magento-image/commit/1dfba6a26461826e1fb7b5a388ccd34f16675bf2))
+* support JDK 24+ JEP 493 runtimes without jmods in OpenSearch rootfs build ([4a429ff](https://github.com/EcomDev/action-build-magento-image/commit/4a429ff127872ecbbecd2277ecb3ff4ccd7aab22))
+
+
+### Documentation
+
+* breaking changes in Dockerfile image build process and update usage examples to v2.0.0 ([929ba5c](https://github.com/EcomDev/action-build-magento-image/commit/929ba5c4562ab7d5c375fb3adb3fbf06704ec880))
+
 ## [1.0.1](https://github.com/EcomDev/action-build-magento-image/compare/v1.0.0...v1.0.1) (2026-11-18)
 
 

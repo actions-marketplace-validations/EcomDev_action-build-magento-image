@@ -36,7 +36,8 @@ DROP_MODULES=(
 )
 
 # Java modules required by OpenSearch 2.x/3.x core, Lucene, Netty, Painless, Log4j, and agent.
-# Filtered against $JDK_DIR/jmods so builds stay compatible across JDK 17/21/25+.
+# Filtered against $JDK_DIR/jmods (JDK 17-23) or `java --list-modules` (JDK 24+ JEP 493
+# linkable runtimes without jmods/).
 DESIRED_JMODS=(
   java.base
   java.compiler
@@ -109,12 +110,32 @@ copy_binary_with_libs() {
 
 build_custom_jre() {
   local available_mods=()
+  local jlink_args=()
   local mod
-  for mod in "${DESIRED_JMODS[@]}"; do
-    if [[ -f "${JDK_DIR}/jmods/${mod}.jmod" ]]; then
-      available_mods+=("${mod}")
-    fi
-  done
+
+  if [[ -d "${JDK_DIR}/jmods" ]]; then
+    jlink_args+=(--module-path "${JDK_DIR}/jmods")
+    for mod in "${DESIRED_JMODS[@]}"; do
+      if [[ -f "${JDK_DIR}/jmods/${mod}.jmod" ]]; then
+        available_mods+=("${mod}")
+      fi
+    done
+  else
+    # JDK 24+ (JEP 493) ships a linkable runtime image without a jmods/ directory;
+    # discover modules from `java --list-modules` and let jlink link from the runtime image.
+    local installed_mods
+    installed_mods="$("${JDK_DIR}/bin/java" --list-modules | sed 's/@.*//')"
+    for mod in "${DESIRED_JMODS[@]}"; do
+      if grep -Fxq "${mod}" <<< "${installed_mods}"; then
+        available_mods+=("${mod}")
+      fi
+    done
+  fi
+
+  if [[ ${#available_mods[@]} -eq 0 ]]; then
+    echo "Error: no Java modules found in ${JDK_DIR}" >&2
+    exit 1
+  fi
 
   local mod_csv
   mod_csv="$(IFS=,; printf '%s' "${available_mods[*]}")"
@@ -130,7 +151,7 @@ build_custom_jre() {
 
   mkdir -p "${DEST_OS}"
   "${JDK_DIR}/bin/jlink" \
-    --module-path "${JDK_DIR}/jmods" \
+    ${jlink_args[@]+"${jlink_args[@]}"} \
     --add-modules "${mod_csv}" \
     --strip-java-debug-attributes \
     --no-man-pages \
