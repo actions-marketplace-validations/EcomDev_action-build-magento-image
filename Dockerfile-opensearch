@@ -1,4 +1,4 @@
-ARG SOURCE_VERSION
+ARG SOURCE_VERSION=3.0
 
 FROM ghcr.io/wardenenv/opensearch:${SOURCE_VERSION}
 

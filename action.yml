@@ -6,10 +6,16 @@ branding:
   color: purple
 inputs:
   artifact:
-    required: true
+    required: false
     description: Name of artifact to build image from
+  artifactId:
+    required: false
+    description: ID of artifact to build image from (overrides artifact name when set)
+  artifactPath:
+    required: false
+    description: Local directory path containing exported archive files (skips artifact download)
   containerType:
-    description: Container Type
+    description: Container Type (mariadb, mysql, opensearch, or media)
     required: true
   registry:
     description: Container registry
@@ -18,6 +24,10 @@ inputs:
     description: Container registry username
   password:
     description: Container registry password
+  token:
+    description: GitHub token used to download workflow artifacts
+    required: false
+    default: ${{ github.token }}
   imageName:
     description: Image name
     required: true
@@ -27,46 +37,98 @@ inputs:
   push:
     default: 'false'
     description: Push Images to repository
+  load:
+    required: false
+    default: 'false'
+    description: Load built single-platform image into local Docker daemon
+  cache:
+    required: false
+    default: 'false'
+    description: Enable GitHub Actions BuildKit cache (type=gha)
   version:
-    required: true
-    description: Base version of image to use
+    required: false
+    default: 'none'
+    description: Base version of image to use (optional for media; omitting or setting to 'none' skips opensearch builds)
   platforms:
     required: false
     description: Platforms Docker Image build
     default: linux/amd64,linux/arm64
+  compression:
+    required: false
+    default: zstd
+    description: OCI layer compression algorithm when pushing images (zstd, gzip, estargz, or uncompressed)
+  compressionLevel:
+    required: false
+    default: '9'
+    description: Compression level when pushing images (0-22 for zstd, 0-9 for gzip/estargz)
+outputs:
+  skipped:
+    description: Whether the image build was skipped (e.g. optional OpenSearch without version or search.tgz)
+    value: ${{ steps.prepare.outputs.skip == 'true' || steps.context.outputs.skip == 'true' }}
+  digest:
+    description: Digest of the built container image
+    value: ${{ steps.build-and-push.outputs.digest }}
+  tags:
+    description: Generated Docker image tags
+    value: ${{ steps.meta.outputs.tags }}
+  metadata:
+    description: Generated Docker metadata JSON
+    value: ${{ steps.meta.outputs.json }}
 runs:
   using: composite
   steps:
-    - name: Create artifact directory
-      run: mkdir -p artifact/
+    - name: Validate inputs and prepare workspace
+      id: prepare
       shell: bash
+      run: |
+        "${{ github.action_path }}/scripts/prepare-workspace.sh" \
+          "${{ inputs.containerType }}" \
+          "${{ inputs.version }}" \
+          "${{ inputs.artifact }}" \
+          "${{ inputs.artifactId }}" \
+          "${{ inputs.artifactPath }}" \
+          "${{ inputs.cache }}" \
+          "${{ inputs.load }}" \
+          "${{ inputs.push }}" \
+          "${{ inputs.compression }}" \
+          "${{ inputs.compressionLevel }}"
 
-    - name: Download artifact
+    - name: Download artifact by ID
+      if: steps.prepare.outputs.skip != 'true' && inputs.artifactPath == '' && inputs.artifactId != ''
       uses: actions/download-artifact@v8
       with:
-        github-token: ${{ inputs.password }}
-        path: artifact/
+        github-token: ${{ inputs.token }}
+        path: ${{ steps.prepare.outputs.source_dir }}
+        artifact-ids: ${{ inputs.artifactId }}
+
+    - name: Download artifact by name
+      if: steps.prepare.outputs.skip != 'true' && inputs.artifactPath == '' && inputs.artifactId == ''
+      uses: actions/download-artifact@v8
+      with:
+        github-token: ${{ inputs.token }}
+        path: ${{ steps.prepare.outputs.source_dir }}
         name: ${{ inputs.artifact }}
 
-    - name: Unpack archived data
-      run: |
-        cd artifact
-        # Unpack search index data
-        tar xzvf search.tgz
-        # Unpack media data
-        tar xzvf media.tgz
-        # Uncompress database dump
-        gunzip db.sql.gz
+    - name: Prepare build context
+      id: context
+      if: steps.prepare.outputs.skip != 'true'
       shell: bash
+      run: |
+        "${{ github.action_path }}/scripts/prepare-context.sh" \
+          "${{ inputs.containerType }}" \
+          "${{ steps.prepare.outputs.source_dir }}" \
+          "${{ steps.prepare.outputs.context_dir }}"
 
     - name: Set up QEMU
+      if: steps.prepare.outputs.skip != 'true' && steps.context.outputs.skip != 'true'
       uses: docker/setup-qemu-action@v4.4.0
 
     - name: Set up Docker Buildx
+      if: steps.prepare.outputs.skip != 'true' && steps.context.outputs.skip != 'true'
       uses: docker/setup-buildx-action@v4.4.1
 
     - name: Log into registry ${{ inputs.registry }}
-      if: inputs.push != 'false'
+      if: steps.prepare.outputs.skip != 'true' && steps.context.outputs.skip != 'true' && inputs.push != 'false'
       uses: docker/login-action@v4.8.0
       with:
         registry: ${{ inputs.registry }}
@@ -75,6 +137,7 @@ runs:
 
     - name: Extract Docker metadata
       id: meta
+      if: steps.prepare.outputs.skip != 'true' && steps.context.outputs.skip != 'true'
       uses: docker/metadata-action@v6.2.0
       with:
         images: ${{ inputs.registry }}/${{ inputs.imageName }}
@@ -82,15 +145,25 @@ runs:
 
     - name: Build and push Docker image
       id: build-and-push
+      if: steps.prepare.outputs.skip != 'true' && steps.context.outputs.skip != 'true'
       uses: docker/build-push-action@v7.4.0
       with:
-        provenance: mode=max
-        context: artifact/
-        file: ${{ github.action_path  }}/Dockerfile-${{ inputs.containerType }}
-        push: ${{ inputs.push != 'false' }}
+        provenance: ${{ steps.prepare.outputs.provenance }}
+        context: ${{ steps.prepare.outputs.context_dir }}
+        build-contexts: scripts=${{ github.action_path }}/scripts
+        file: ${{ github.action_path }}/Dockerfile-${{ inputs.containerType }}
+        load: ${{ inputs.load != 'false' }}
+        outputs: ${{ steps.prepare.outputs.outputs }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         platforms: ${{ inputs.platforms }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-from: ${{ steps.prepare.outputs.cache_from }}
+        cache-to: ${{ steps.prepare.outputs.cache_to }}
         build-args: SOURCE_VERSION=${{ inputs.version }}
+
+    - name: Clean up temporary workspace
+      if: always() && steps.prepare.outputs.work_dir != ''
+      shell: bash
+      env:
+        WORK_DIR: ${{ steps.prepare.outputs.work_dir }}
+      run: rm -rf "${WORK_DIR}"

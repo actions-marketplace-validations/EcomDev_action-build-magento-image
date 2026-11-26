@@ -1,27 +1,31 @@
-ARG SOURCE_VERSION
+# check=skip=SecretsUsedInArgOrEnv
+ARG SOURCE_VERSION=11.8
 
-FROM ghcr.io/wardenenv/mariadb:${SOURCE_VERSION} as mariadb-setup
+FROM ghcr.io/wardenenv/mariadb:${SOURCE_VERSION} AS mariadb-rootfs
 
-ENV MYSQL_DATABASE magento
-ENV MYSQL_PASSWORD magento
-ENV MYSQL_ROOT_PASSWORD magento
-ENV MYSQL_USER magento
-ENV MYSQL_INIT_ONLY 1
+COPY --from=scripts --chmod=0755 write-db-config.sh prepare-db-rootfs.sh /tmp/
+RUN ["/tmp/prepare-db-rootfs.sh", "mariadb"]
 
-# Prevent executing server on build run
-RUN ["sed", "-i", "s/exec \\\"$@\\\"/ /", "/usr/local/bin/docker-entrypoint.sh"]
-RUN /usr/bin/install -m 0775 -o mysql -g root -d /setup/
-COPY *.sql /docker-entrypoint-initdb.d/
+FROM --platform=$BUILDPLATFORM ghcr.io/wardenenv/mariadb:${SOURCE_VERSION} AS mariadb-init
 
-RUN ["docker-entrypoint.sh", "mariadbd"]
+COPY --from=scripts --chmod=0755 write-db-config.sh init-db.sh /tmp/
+COPY *.sql* /docker-entrypoint-initdb.d/
 
-RUN mv /var/lib/mysql /setup/db
+RUN ["/tmp/init-db.sh", "mariadb"]
 
-FROM wardenenv/mariadb:${SOURCE_VERSION}
+FROM scratch
 
-ENV MYSQL_DATABASE magento
-ENV MYSQL_PASSWORD magento
-ENV MYSQL_ROOT_PASSWORD magento
-ENV MYSQL_USER magento
+ENV PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    MYSQL_DATABASE=magento \
+    MYSQL_PASSWORD=magento \
+    MYSQL_ROOT_PASSWORD=magento \
+    MYSQL_USER=magento
 
-COPY --from=mariadb-setup /setup/db /var/lib/mysql
+COPY --from=mariadb-rootfs /rootfs /
+COPY --from=scripts --chmod=0755 db-entrypoint.sh /usr/local/bin/db-entrypoint.sh
+COPY --from=mariadb-init --chown=mysql:mysql /setup/db /var/lib/mysql
+
+USER mysql
+EXPOSE 3306
+
+ENTRYPOINT ["/usr/local/bin/db-entrypoint.sh", "mariadbd"]
