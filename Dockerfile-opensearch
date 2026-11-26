@@ -1,6 +1,25 @@
 ARG SOURCE_VERSION=3.0
 
-FROM ghcr.io/wardenenv/opensearch:${SOURCE_VERSION}
+FROM ghcr.io/wardenenv/opensearch:${SOURCE_VERSION} AS opensearch-rootfs
 
-RUN rm -rf /usr/share/opensearch/data
+USER root
+COPY --from=scripts --chmod=0755 prepare-opensearch-rootfs.sh /tmp/
+RUN ["/tmp/prepare-opensearch-rootfs.sh"]
+
+FROM scratch
+
+ENV PATH=/usr/share/opensearch/jdk/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    JAVA_HOME=/usr/share/opensearch/jdk \
+    OPENSEARCH_HOME=/usr/share/opensearch \
+    OPENSEARCH_PATH_CONF=/usr/share/opensearch/config
+
+COPY --from=opensearch-rootfs /rootfs /
+COPY --from=scripts --chmod=0755 opensearch-entrypoint.sh /usr/local/bin/opensearch-entrypoint.sh
 COPY --chown=opensearch:opensearch search/ /usr/share/opensearch/data
+
+WORKDIR /usr/share/opensearch
+USER opensearch
+EXPOSE 9200 9300
+
+ENTRYPOINT ["/usr/local/bin/opensearch-entrypoint.sh"]
+CMD ["opensearch"]

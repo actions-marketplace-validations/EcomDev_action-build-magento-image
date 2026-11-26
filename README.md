@@ -26,7 +26,7 @@ The `containerType` input selects which Dockerfile is built from the artifact da
 | --- | --- | --- | --- |
 | `mariadb` | `scratch` *(built from `ghcr.io/wardenenv/mariadb:<version>`)* | `/var/lib/mysql` | Minimal server-only image containing `mariadbd`, required shared libraries, a minimal `/bin/sh` entrypoint, `env`, and pre-initialized `/var/lib/mysql` (no client tools or anonymous `VOLUME`). |
 | `mysql` | `scratch` *(built from `ghcr.io/wardenenv/mysql:<version>`)* | `/var/lib/mysql` | Minimal server-only image containing `mysqld`, required shared libraries, a minimal `/bin/sh` entrypoint, `env`, and pre-initialized `/var/lib/mysql` (no `mysql-shell`, client tools, or anonymous `VOLUME`). |
-| `opensearch` | `ghcr.io/wardenenv/opensearch:<version>` | `/usr/share/opensearch/data` | Replaces the OpenSearch data directory with the pre-indexed `search/` directory (`opensearch:opensearch`). Gracefully skipped (`skipped: 'true'`) when `version` is omitted/`'none'` or `search.tgz` is absent. |
+| `opensearch` | `scratch` *(built from `ghcr.io/wardenenv/opensearch:<version>`)* | `/usr/share/opensearch/data` | Minimal image containing a custom `jlink` JRE, core OpenSearch runtime, `analysis-icu` and `analysis-phonetic` plugins, a minimal `/bin/sh` entrypoint, `env`, and pre-indexed `/usr/share/opensearch/data` (no unused plugins, GeoIP databases, `curl`, or anonymous `VOLUME`). Gracefully skipped (`skipped: 'true'`) when `version` is omitted/`'none'` or `search.tgz` is absent. |
 | `media` | `scratch` | `/` | Minimal data-only image containing unpacked `media/` files with ownership `1000:1000` and permissions `0777`. `version` is optional. |
 
 ### Database Runtime Environment Variables (`mariadb` and `mysql`)
@@ -89,7 +89,7 @@ jobs:
     needs: build-artifact
     steps:
       - name: Build and Push MariaDB Data Image
-        uses: ecomdev/action-build-magento-image@v1.0.1
+        uses: ecomdev/action-build-magento-image@v2.0.0
         with:
           artifactId: ${{ needs.build-artifact.outputs.artifact-id }}
           containerType: mariadb
@@ -160,7 +160,7 @@ jobs:
           config-file: ${{ steps.init.outputs.config-file }}
 
       - name: Build and Push MariaDB Image
-        uses: ecomdev/action-build-magento-image@v1.0.1
+        uses: ecomdev/action-build-magento-image@v2.0.0
         with:
           artifactPath: ${{ steps.dump.outputs.output-directory }}
           containerType: mariadb
@@ -234,7 +234,7 @@ jobs:
         include: ${{ fromJson(needs.generate-matrix.outputs.images) }}
     steps:
       - name: Build ${{ matrix.containerType }} Image (${{ matrix.artifact }})
-        uses: ecomdev/action-build-magento-image@v1.0.1
+        uses: ecomdev/action-build-magento-image@v2.0.0
         with:
           artifact: ${{ matrix.artifact }}
           containerType: ${{ matrix.containerType }}
@@ -294,6 +294,14 @@ Configure job or workflow `permissions` according to whether images are pushed:
 
 - **Runner Environment**: Linux GitHub Actions runner (such as `ubuntu-latest`) with Docker and `tar` available.
 - **Data Source**: Either a workflow artifact (`artifact` / `artifactId`) or a local `artifactPath` containing the archive matching `containerType` (`db.sql.gz` / `*.sql`, `media.tgz`, or `search.tgz`).
+
+## Upgrading from v1 to v2
+
+- **Minimal `FROM scratch` database and OpenSearch images**:
+  - `mariadb` and `mysql` containers no longer include the full base OS, CLI client tools (`mariadb`/`mysql`, `mysqladmin`, `mysqldump`, `healthcheck.sh`), `bash` (on MariaDB), or upstream `docker-entrypoint.sh`. Connect over TCP/network for queries and health checks, and use `MYSQL_ENABLE_BINLOG=1` (and optional `MYSQL_SERVER_ID`) to enable `ROW`/`FULL` binary logging.
+  - `opensearch` containers now ship only a custom `jlink` JRE, core OpenSearch libraries/modules, and the Magento-required `analysis-icu` and `analysis-phonetic` plugins (dropping unused plugins such as `opensearch-ml`, `opensearch-knn`, `opensearch-sql`, `opensearch-security`, and `opensearch-performance-analyzer`, as well as `ingest-geoip`, `opensearch-dashboards`, and base OS tools like `curl`). Standard environment variables (`discovery.type=single-node`, `DISABLE_SECURITY_PLUGIN=true`, dot-separated settings, and `OPENSEARCH_JAVA_OPTS`) remain supported; connect over HTTP port `9200` for queries and health checks.
+- **Default OCI `zstd` layer compression**: Pushed images now default to `compression: zstd` with `oci-mediatypes=true`. Set `compression: gzip` if you need compatibility with Docker Engine < 23, containerd < 1.5, or registries without OCI `zstd` support.
+- **Artifact download token & cache defaults**: Artifact downloads now authenticate with `token` (default `${{ github.token }}`) instead of `password`, `cache` defaults to `'false'` instead of always enabling `type=gha`, and unpacked artifacts are cleaned up after the build rather than left in `./artifact/`.
 
 ## Related Actions
 

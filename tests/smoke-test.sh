@@ -136,10 +136,12 @@ test_database_binlog() {
 }
 
 wait_for_opensearch_ready() {
-  local cid="$1"
+  local cid="$1" port="$2"
   local attempt
   for attempt in $(seq 1 30); do
-    if docker exec "${cid}" curl -fsS "http://127.0.0.1:9200/_cat/indices/magento2*" >/dev/null 2>&1; then
+    if docker logs "${cid}" 2>/dev/null | grep -q "Cluster health status changed from \[RED\]" \
+      && curl -fsS "http://127.0.0.1:${port}/_cat/indices/magento2*" >/dev/null 2>&1; then
+      pass "OpenSearch: reported cluster health transition and accepted HTTP queries"
       return 0
     fi
     sleep 2
@@ -149,15 +151,52 @@ wait_for_opensearch_ready() {
   fail "OpenSearch: did not become ready within 60s"
 }
 
+assert_opensearch_container_metadata() {
+  local cid="$1"
+  local mounts env_output
+
+  mounts="$(docker inspect --format '{{json .Mounts}}' "${cid}")"
+  assert_eq "OpenSearch: no anonymous volumes" "${mounts}" "[]"
+
+  env_output="$(docker exec "${cid}" env)"
+  assert_match "OpenSearch: docker exec env exposes OPENSEARCH_HOME=/usr/share/opensearch" "${env_output}" '^OPENSEARCH_HOME=/usr/share/opensearch$'
+}
+
 test_opensearch() {
   local cid="$1"
-  local indices
+  local port indices plugins analyze_out script_out
 
   log_section "OpenSearch"
-  wait_for_opensearch_ready "${cid}"
-  indices="$(docker exec "${cid}" curl -fsS "http://127.0.0.1:9200/_cat/indices/magento2*")"
+  port="$(docker port "${cid}" 9200/tcp | head -n 1 | awk -F: '{print $NF}')"
+  if [[ -z "${port}" ]]; then
+    fail "OpenSearch: failed to resolve published host port for 9200/tcp"
+  fi
+
+  wait_for_opensearch_ready "${cid}" "${port}"
+  assert_opensearch_container_metadata "${cid}"
+
+  indices="$(curl -fsS "http://127.0.0.1:${port}/_cat/indices/magento2*")"
   assert_match "OpenSearch: magento2 indices present" "${indices}" 'magento2'
   printf '%s\n' "${indices}"
+
+  plugins="$(curl -fsS "http://127.0.0.1:${port}/_cat/plugins")"
+  assert_match "OpenSearch: analysis-icu plugin loaded" "${plugins}" 'analysis-icu'
+  assert_match "OpenSearch: analysis-phonetic plugin loaded" "${plugins}" 'analysis-phonetic'
+
+  analyze_out="$(curl -fsS -X POST "http://127.0.0.1:${port}/_analyze" \
+    -H 'Content-Type: application/json' \
+    -d '{"tokenizer":"icu_tokenizer","filter":["icu_folding","phonetic"],"text":"Café Shirt"}')"
+  assert_match "OpenSearch: ICU and phonetic analyzers execute" "${analyze_out}" '"tokens":\['
+
+  curl -fsS -X PUT "http://127.0.0.1:${port}/smoke_test/_doc/1?refresh=true" \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"Test Product","price":42}' >/dev/null
+  script_out="$(curl -fsS -X POST "http://127.0.0.1:${port}/smoke_test/_search" \
+    -H 'Content-Type: application/json' \
+    -d '{"script_fields":{"doubled":{"script":{"lang":"painless","source":"doc[\u0027price\u0027].value * 2"}}}}')"
+  assert_match "OpenSearch: Painless scripting and index writes succeed" "${script_out}" '"doubled":\[84\]'
+  curl -fsS -X DELETE "http://127.0.0.1:${port}/smoke_test" >/dev/null
+  pass "OpenSearch: temporary smoke_test index deleted"
 }
 
 main() {
@@ -176,7 +215,7 @@ main() {
   start_container mysql_cid --network "${NET_NAME}" --network-alias mysql-smoke "${mysql_image}"
   start_container mariadb_binlog_cid --network "${NET_NAME}" --network-alias mariadb-binlog -e MYSQL_ENABLE_BINLOG=1 "${mariadb_image}"
   start_container mysql_binlog_cid --network "${NET_NAME}" --network-alias mysql-binlog -e MYSQL_ENABLE_BINLOG=1 "${mysql_image}"
-  start_container opensearch_cid -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true "${opensearch_image}"
+  start_container opensearch_cid -p 127.0.0.1::9200 -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true "${opensearch_image}"
 
   start_container mariadb_client_cid --network "${NET_NAME}" --entrypoint sleep "${MARIADB_CLIENT_IMAGE}" infinity
   start_container mysql_client_cid --network "${NET_NAME}" --entrypoint sleep "${MYSQL_CLIENT_IMAGE}" infinity
